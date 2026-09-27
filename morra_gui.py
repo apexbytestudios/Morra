@@ -9,12 +9,36 @@ import tkinter as tk
 from tkinter import messagebox
 from collections import Counter
 from datetime import datetime
+import urllib.request
 
 # Gestione dinamica dell'importazione di websockets per evitare blocchi
 try:
     import websockets
 except ImportError:
     websockets = None
+    
+VERSIONE_ATTUALE = "1.1.0" 
+GITHUB_REPO = "apexbytestudios/Morra"  # Sostituisci con la tua repo GitHub reale
+
+def verifica_aggiornamenti_github(parent):
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    
+    try:
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            tag_latest = data.get("tag_name", "").strip("v")
+            
+            if tag_latest and tag_latest != VERSIONE_ATTUALE:
+                mostra_warning_win95(
+                    parent,
+                    "Aggiornamento Disponibile",
+                    f"È disponibile una nuova versione ({tag_latest})!\n"
+                    f"Versione attuale: {VERSIONE_ATTUALE}\n\n"
+                    f"Scarica l'aggiornamento da GitHub."
+                )
+    except Exception as e:
+        print(f"Impossibile verificare gli aggiornamenti: {e}")
 
 # =============================================================================
 # FILE SALVATAGGIO LOCALE
@@ -106,6 +130,70 @@ def win95_titlebar(parent, title, close_cmd=None):
                   relief="raised", bd=2, padx=2, pady=0,
                   cursor="arrow").pack(side=tk.RIGHT, padx=2, pady=1)
 
+def mostra_warning_win95(parent, titolo, messaggio, on_close=None):
+    win = tk.Toplevel(parent)
+    win.title(titolo)
+    win.resizable(False, False)
+    win.configure(bg=W["bg"])
+    win.grab_set()  # Rende la finestra modale
+
+    def chiudi():
+        win.destroy()
+        if on_close:
+            on_close()
+
+    win.protocol("WM_DELETE_WINDOW", chiudi)
+    win95_titlebar(win, f"  {titolo}", close_cmd=chiudi)
+
+    outer = tk.Frame(win, bg=W["bg"], padx=12, pady=12)
+    outer.pack(fill="both", expand=True)
+
+    body = tk.Frame(outer, bg=W["bg"])
+    body.pack(fill="both", expand=True, pady=(0, 12))
+
+    # Canvas per l'icona Warning classica Win95 (Triangolo giallo)
+    canvas = tk.Canvas(body, width=32, height=32, bg=W["bg"], highlightthickness=0)
+    canvas.pack(side=tk.LEFT, padx=(0, 12))
+
+    canvas.create_polygon(16, 2, 30, 28, 2, 28, fill="#FFFF00", outline="#000000", width=2)
+    canvas.create_rectangle(15, 8, 17, 18, fill="#000000", outline="#000000")
+    canvas.create_rectangle(15, 21, 17, 23, fill="#000000", outline="#000000")
+
+    lbl = tk.Label(body, text=messaggio, font=FONT_NORMAL, bg=W["bg"], fg=W["text"], justify="left", wraplength=280)
+    lbl.pack(side=tk.LEFT, fill="both", expand=True)
+
+    btn_frame = tk.Frame(outer, bg=W["bg"])
+    btn_frame.pack()
+    win95_button(btn_frame, "OK", command=chiudi, width=8).pack()
+    
+def mostra_info_win95(parent, titolo, messaggio, on_close=None):
+    popup = tk.Toplevel(parent)
+    popup.transient(parent)
+    popup.grab_set()
+    win95_titlebar(popup, f"  {titolo}", close_cmd=lambda: _chiudi_popup(popup, on_close))
+    
+    outer = tk.Frame(popup, bg=W["bg"], padx=12, pady=12)
+    outer.pack(fill="both", expand=True)
+
+    f_content = tk.Frame(outer, bg=W["bg"])
+    f_content.pack(fill="both", expand=True, pady=(0, 10))
+
+    # Icona di informazione Win95
+    lbl_icon = tk.Label(f_content, text="i", font=("Courier", 16, "bold"), fg="white", bg="#000080", width=2, height=1)
+    lbl_icon.pack(side=tk.LEFT, padx=(0, 10), anchor="n")
+
+    lbl_msg = tk.Label(f_content, text=messaggio, font=FONT_NORMAL, bg=W["bg"], fg=W["text"], justify="left", wraplength=300)
+    lbl_msg.pack(side=tk.LEFT, fill="both", expand=True)
+
+    btn_ok = win95_button(outer, "OK", command=lambda: _chiudi_popup(popup, on_close), width=10)
+    btn_ok.pack(anchor="e")
+
+
+def _chiudi_popup(popup, callback):
+    popup.destroy()
+    if callback:
+        callback()
+
 # =============================================================================
 # GESTIONE NETWORK / RETE RENDER
 # =============================================================================
@@ -141,6 +229,7 @@ class NetworkConnection:
     def close(self):
         """Chiude la connessione WebSocket in modo pulito."""
         if self.ws and self.ws_loop and self.ws_loop.is_running():
+            asyncio.run_coroutine_threadsafe(self.ws.send(json.dumps({"type": "leave"})), self.ws_loop)
             asyncio.run_coroutine_threadsafe(self.ws.close(), self.ws_loop)
         self.ws = None
         self.ws_loop = None
@@ -187,7 +276,8 @@ class NetworkConnection:
                             if self.on_init:
                                 self.on_init(opp_name)
 
-                        elif msg_type == "round_result":
+                        # All'interno di _connetti_websocket in morra_gui_4.py
+                        elif msg_type in ("round_result", "player_left", "opponent_left", "restart_requested_by", "restart_game"):
                             if self.on_message:
                                 self.on_message(data)
 
@@ -303,7 +393,6 @@ def apri_leaderboard_mondiale(parent, host="morra-server.onrender.com"):
     lbl_status.pack(pady=(0, 4))
 
     def carica_dati():
-        # Formatta l'URL per la connessione WebSocket WSS
         ws_url = host
         if ws_url.startswith("http://"):
             ws_url = ws_url.replace("http://", "ws://")
@@ -315,8 +404,8 @@ def apri_leaderboard_mondiale(parent, host="morra-server.onrender.com"):
         ws_url = ws_url.split("/api")[0]
 
         async def fetch():
-            max_tentativi = 5  # Più tentativi brevi per dare tempo a Render di svegliarsi
-            timeout_per_tentativo = 12 # Timeout massimo (in secondi) per singolo tentativo
+            max_tentativi = 5
+            timeout_per_tentativo = 12
             
             for tentativo in range(1, max_tentativi + 1):
                 try:
@@ -324,7 +413,6 @@ def apri_leaderboard_mondiale(parent, host="morra-server.onrender.com"):
                         text=f"Sveglio il server Render... Tentativo {t}/{max_tentativi}"
                     ))
                     
-                    # Usa asyncio.wait_for per FORZARE il timeout anche se la rete non risponde
                     async def do_connect():
                         async with websockets.connect(ws_url, open_timeout=10) as ws:
                             await ws.send(json.dumps({"type": "get_leaderboard"}))
@@ -339,13 +427,12 @@ def apri_leaderboard_mondiale(parent, host="morra-server.onrender.com"):
                         return
 
                 except (asyncio.TimeoutError, Exception):
-                    # Se va in timeout o fallisce, passa al tentativo successivo
                     if tentativo == max_tentativi:
                         win.after(0, lambda: lbl_status.config(
                             text="Il server non ha risposto in tempo. Riprova tra 10 secondi."
                         ))
                     else:
-                        await asyncio.sleep(1) # Breve pausa prima di riprovare
+                        await asyncio.sleep(1)
 
         asyncio.run(fetch())
 
@@ -368,7 +455,6 @@ def apri_leaderboard_mondiale(parent, host="morra-server.onrender.com"):
                 riga = f"  {data_str:<16} {vincitore:<12} {perdente:<12} {score:<7} {stanza}"
                 listbox.insert(tk.END, riga)
 
-    # Avvia il download asincrono in background
     threading.Thread(target=carica_dati, daemon=True).start()
 
     frame_btn = tk.Frame(outer, bg=W["bg"])
@@ -550,6 +636,7 @@ class App(tk.Tk):
         self.geometry("520x630")
         self.resizable(False, False)
         self.configure(bg=W["bg"])
+        self.after(2000, lambda: verifica_aggiornamenti_github(self))
 
         try:
             icon = tk.PhotoImage(width=16, height=16)
@@ -691,7 +778,7 @@ class SchermataMenu(tk.Frame):
         )
 
 # =============================================================================
-# LOBBY MULTIPLAYER CON PASSWORD (SERVER RENDER)
+# LOBBY MULTIPLAYER CON PASSWORD E RICERCA STANZE (SERVER RENDER)
 # =============================================================================
 class SchermataMultiplayerLobby(tk.Frame):
     def __init__(self, master):
@@ -745,7 +832,12 @@ class SchermataMultiplayerLobby(tk.Frame):
         self.entry_punti.insert(0, "5")
         self.entry_punti.grid(row=3, column=1, sticky="w", padx=6, pady=3)
 
-        win95_button(outer, "Crea o Entra in Stanza", command=self._connetti_server, width=20, font=FONT_BOLD).pack(pady=8)
+        # PULSANTI D'AZIONE
+        frame_btn_actions = tk.Frame(outer, bg=W["bg"])
+        frame_btn_actions.pack(pady=8)
+
+        win95_button(frame_btn_actions, "Crea o Entra in Stanza", command=self._connetti_server, width=18, font=FONT_BOLD).pack(side=tk.LEFT, padx=4)
+        win95_button(frame_btn_actions, "Cerca Stanze", command=self._apri_ricerca_stanze, width=14, font=FONT_BOLD).pack(side=tk.LEFT, padx=4)
 
         # BARRA INFERIORE
         frame_bottom = tk.Frame(outer, bg=W["bg"])
@@ -754,6 +846,110 @@ class SchermataMultiplayerLobby(tk.Frame):
         win95_button(frame_bottom, "< Indietro", command=self._torna_menu, width=10).pack(side=tk.LEFT)
         self.label_status = tk.Label(frame_bottom, text="Imposta Nome e Password Stanza.", font=FONT_NORMAL, bg=W["bg"], fg=W["text"])
         self.label_status.pack(side=tk.RIGHT, padx=6)
+
+    def _apri_ricerca_stanze(self):
+        host = self.entry_server_host.get().strip()
+        ws_url = host
+        if ws_url.startswith("http://"):
+            ws_url = ws_url.replace("http://", "ws://")
+        elif ws_url.startswith("https://"):
+            ws_url = ws_url.replace("https://", "wss://")
+        elif not ws_url.startswith("ws://") and not ws_url.startswith("wss://"):
+            ws_url = "wss://" + ws_url
+
+        win = tk.Toplevel(self)
+        win.title("Stanze Disponibili")
+        win.geometry("450x380")
+        win.resizable(False, False)
+        win.configure(bg=W["bg"])
+        win.grab_set()
+
+        win95_titlebar(win, "  Stanze Online in Attesa", close_cmd=win.destroy)
+
+        outer = tk.Frame(win, bg=W["bg"], padx=8, pady=8)
+        outer.pack(fill="both", expand=True)
+
+        frame_st = win95_label_frame(outer, text=" Stanze Attive ")
+        frame_st.pack(fill="both", expand=True, pady=(0, 8))
+
+        frame_lb = tk.Frame(frame_st, bg=W["bg"])
+        frame_lb.pack(fill="both", expand=True, padx=4, pady=4)
+
+        listbox = tk.Listbox(frame_lb, font=FONT_MONO, height=10,
+                             activestyle="none",
+                             bg=W["sunken_bg"], fg=W["text"],
+                             selectbackground=W["select_bg"],
+                             selectforeground=W["select_fg"],
+                             relief="sunken", bd=2)
+        sb = tk.Scrollbar(frame_lb, orient="vertical", command=listbox.yview)
+        listbox.config(yscrollcommand=sb.set)
+        listbox.pack(side=tk.LEFT, fill="both", expand=True)
+        sb.pack(side=tk.RIGHT, fill="y")
+
+        lbl_status = tk.Label(outer, text="Richiesta elenco stanze...", font=FONT_NORMAL, bg=W["bg"], fg=W["text"])
+        lbl_status.pack(pady=(0, 4))
+
+        def seleziona_stanza(event=None):
+            selection = listbox.curselection()
+            if not selection:
+                return
+            index = selection[0]
+            val = listbox.get(index)
+            if not val or val.startswith("  (") or val.startswith("  STANZA"):
+                return
+            parti = val.strip().split()
+            if parti:
+                room_code = parti[0]
+                self.entry_room_code.delete(0, tk.END)
+                self.entry_room_code.insert(0, room_code)
+                win.destroy()
+
+        listbox.bind("<Double-Button-1>", seleziona_stanza)
+
+        def carica_stanze():
+            async def fetch():
+                try:
+                    ssl_ctx = ssl.create_default_context()
+                    ssl_ctx.check_hostname = False
+                    ssl_ctx.verify_mode = ssl.CERT_NONE
+
+                    async with websockets.connect(ws_url, ssl=ssl_ctx, open_timeout=10) as ws:
+                        await ws.send(json.dumps({"type": "get_rooms"}))
+                        res = await asyncio.wait_for(ws.recv(), timeout=8)
+                        data = json.loads(res)
+                        if data.get("type") == "rooms_list":
+                            stanze = data.get("rooms", [])
+                            win.after(0, lambda: aggiorna_ui(stanze))
+                except Exception as e:
+                    win.after(0, lambda: lbl_status.config(text=f"Errore caricamento: {e}"))
+
+            asyncio.run(fetch())
+
+        def aggiorna_ui(stanze):
+            listbox.delete(0, tk.END)
+            lbl_status.config(text="Doppio clic su una stanza per selezionarla.")
+
+            if not stanze:
+                listbox.insert(tk.END, "  (Nessuna stanza disponibile al momento)")
+            else:
+                listbox.insert(tk.END, f"  {'STANZA':<15} {'CREATORE':<12} {'PUNTI':<6} {'PROTETTA':<8}")
+                listbox.insert(tk.END, "  " + "-" * 45)
+                for s in stanze:
+                    nome = s.get("room_code", "N/D")[:14]
+                    host_player = s.get("host", "Ignoto")[:11]
+                    punti = s.get("punti_vittoria", "5")
+                    has_pass = "Sì" if s.get("has_password", False) else "No"
+
+                    riga = f"  {nome:<15} {host_player:<12} {punti:<6} {has_pass:<8}"
+                    listbox.insert(tk.END, riga)
+
+        threading.Thread(target=carica_stanze, daemon=True).start()
+
+        frame_btn = tk.Frame(outer, bg=W["bg"])
+        frame_btn.pack()
+        win95_button(frame_btn, "Seleziona", command=seleziona_stanza, width=12).pack(side=tk.LEFT, padx=4)
+        win95_button(frame_btn, "Aggiorna", command=lambda: threading.Thread(target=carica_stanze, daemon=True).start(), width=10).pack(side=tk.LEFT, padx=4)
+        win95_button(frame_btn, "Chiudi", command=win.destroy, width=10).pack(side=tk.LEFT, padx=4)
 
     def _connetti_server(self):
         host = self.entry_server_host.get().strip()
@@ -773,7 +969,7 @@ class SchermataMultiplayerLobby(tk.Frame):
             self.after(0, lambda: self._avvia_multiplayer(name, opp_name, room, punti))
 
         def on_disconnect(err):
-            self.after(0, lambda: messagebox.showerror("Errore Connessione", f"Connessione interrotta:\n{err}"))
+            self.after(0, lambda: mostra_warning_win95(self, "Errore Connessione", f"Connessione interrotta:\n{err}"))
 
         self.net = NetworkConnection(
             host=host,
@@ -801,7 +997,7 @@ class SchermataMultiplayerLobby(tk.Frame):
         self.master.mostra_menu()
 
 # =============================================================================
-# SCHERMATA DI GIOCO MULTIPLAYER ONLINE (CON TIMER)
+# SCHERMATA DI GIOCO MULTIPLAYER ONLINE (CON TIMER E POPUP WIN95)
 # =============================================================================
 class SchermataGiocoMultiplayer(tk.Frame):
     def __init__(self, master, net, my_name, opp_name, room_code, punti_vittoria, tempo_turno=10):
@@ -818,6 +1014,7 @@ class SchermataGiocoMultiplayer(tk.Frame):
 
         self.my_score = 0
         self.opp_score = 0
+        self.game_over = False
 
         self._costruisci()
 
@@ -878,15 +1075,24 @@ class SchermataGiocoMultiplayer(tk.Frame):
         self.lbl_status = tk.Label(frame_log, text="Partita avviata! Fai la tua mossa.", font=FONT_NORMAL, bg=W["bg"], fg=W["text"], wraplength=420)
         self.lbl_status.pack(fill="both", expand=True, padx=6, pady=6)
 
-        win95_button(outer, "Abbandona Partita", command=self._abbandona, width=14).pack(anchor="center")
+        # BARRA PULSANTI DI NAVIGAZIONE E RIVINCIATA
+        frame_btn_bottom = tk.Frame(outer, bg=W["bg"])
+        frame_btn_bottom.pack(pady=4)
+
+        self.btn_restart = win95_button(frame_btn_bottom, "Nuova Partita", command=self._richiedi_restart, width=14, font=FONT_BOLD)
+        self.btn_restart.config(state="disabled")
+        self.btn_restart.pack(side=tk.LEFT, padx=6)
+
+        win95_button(frame_btn_bottom, "Abbandona Partita", command=self._abbandona, width=14).pack(side=tk.LEFT, padx=6)
 
     # =========================================================================
     # GESTIONE TIMER CONTO ALLA ROVESCIA
     # =========================================================================
     def _avvia_timer(self):
         self._ferma_timer()
-        self.tempo_rimasto = self.tempo_turno
-        self._aggiorna_timer()
+        if not self.game_over:
+            self.tempo_rimasto = self.tempo_turno
+            self._aggiorna_timer()
 
     def _aggiorna_timer(self):
         self.lbl_timer.config(text=f"Tempo rimasto: {self.tempo_rimasto}s")
@@ -904,8 +1110,7 @@ class SchermataGiocoMultiplayer(tk.Frame):
 
     def _mossa_automatica(self):
         """Invia una mossa predefinita se il tempo scade."""
-        if str(self.btn_invia["state"]) != "disabled":
-            # Garantisce valori validi anche se il campo testo contiene dati errati
+        if str(self.btn_invia["state"]) != "disabled" and not self.game_over:
             try:
                 dita = int(self.var_dita.get())
             except ValueError:
@@ -931,7 +1136,7 @@ class SchermataGiocoMultiplayer(tk.Frame):
             if not (1 <= dita <= 5) or not (2 <= somma <= 10):
                 raise ValueError
         except ValueError:
-            messagebox.showerror("Errore", "Inserisci dita tra 1 e 5 e una somma prevista tra 2 e 10.")
+            mostra_warning_win95(self, "Errore Mossa", "Inserisci dita tra 1 e 5 e una somma prevista tra 2 e 10.")
             return
 
         self._ferma_timer()
@@ -940,10 +1145,41 @@ class SchermataGiocoMultiplayer(tk.Frame):
         self.net.send({"type": "move", "dita": dita, "somma": somma})
         self.lbl_status.config(text="Mossa inviata al server. In attesa dell'avversario...")
 
+    def _richiedi_restart(self):
+        self.btn_restart.config(state="disabled")
+        self.lbl_status.config(text="Richiesta di nuova partita inviata. In attesa della conferma dell'avversario...")
+        self.net.send({"type": "restart_request"})
+
     def _on_network_msg(self, msg):
         msg_type = msg.get("type")
+        
         if msg_type == "round_result":
             self._aggiorna_esito_turno(msg)
+
+        elif msg_type == "restart_requested_by":
+            sender = msg.get("player_name", "L'avversario")
+            self.lbl_status.config(
+                text=f"AVVISO: {sender} ha richiesto una Nuova Partita!\nPremi 'Nuova Partita' per accettare la sfida."
+            )
+
+        elif msg_type == "restart_game":
+            self.game_over = False
+            scores = msg.get("scores", {})
+            self.my_score = scores.get(self.my_name, 0)
+            self.opp_score = scores.get(self.opp_name, 0)
+
+            self.lbl_me.config(text=f"{self.my_name} (Tu): {self.my_score}")
+            self.lbl_opp.config(text=f"{self.opp_name}: {self.opp_score}")
+            self.lbl_status.config(text="Nuova sessione avviata. Effettuare la mossa...")
+            
+            self.btn_invia.config(state="normal")
+            self.btn_restart.config(state="disabled")
+            self._avvia_timer()
+            
+        elif msg_type in ("player_left", "opponent_left"):
+            self._ferma_timer()
+            testo_msg = msg.get("message") or f"{msg.get('player_name', 'L\'avversario')} ha abbandonato la sessione."
+            mostra_warning_win95(self, "Connessione Interrotta", testo_msg, on_close=self._abbandona)
 
     def _aggiorna_esito_turno(self, data):
         my_dita = data["moves"][self.my_name]["dita"]
@@ -960,26 +1196,55 @@ class SchermataGiocoMultiplayer(tk.Frame):
 
         dettagli = (
             f"--- Risultato Turno ---\n"
-            f"Tu ({self.my_name}): {my_dita} dita (Previsto: {my_somma})\n"
-            f"{self.opp_name}: {opp_dita} dita (Previsto: {opp_somma})\n"
-            f"Totale dita calcolato: {totale}\n\n"
-            f"--> {data.get('esito_testo', '')}"
+            f"Tu ({self.my_name}): {my_dita} dita | Somma: {my_somma}\n"
+            f"{self.opp_name}: {opp_dita} dita | Somma: {opp_somma}\n"
+            f"Totale dita: {totale}\n\n"
+            f"Esito: {data.get('esito_testo', '')}"
         )
-        self.lbl_status.config(text=dettagli)
-        self.btn_invia.config(state="normal")
 
         if self.my_score >= self.punti_vittoria or self.opp_score >= self.punti_vittoria:
             self._ferma_timer()
+            self.game_over = True
             vincitore = self.my_name if self.my_score >= self.punti_vittoria else self.opp_name
-            messagebox.showinfo("Fine Partita", f"Partita Terminata!\nVincitore: {vincitore}")
-            self._abbandona()
+            ho_vinto = (vincitore == self.my_name)
+            
+            # Disabilita l'invio e abilita il tasto per la rivincita
+            self.btn_invia.config(state="disabled")
+            self.btn_restart.config(state="normal")
+            self.lbl_timer.config(text="STATO: Partita Conclusa")
+            
+            self.lbl_status.config(
+                text=f"{dettagli}\n\n========================================\n"
+                     f"  SESSIONE TERMINATA - VINCITORE: {vincitore}\n"
+                     f"========================================\n"
+                     f"Fare clic su 'Nuova Partita' per avviare una rivincita."
+            )
+
+            # Mostra il popup Win95 di fine partita
+            if ho_vinto:
+                mostra_info_win95(
+                    self, 
+                    "Vittoria!", 
+                    f"Hai raggiunto {self.my_score} punti e hai vinto la partita contro {self.opp_name}!"
+                )
+            else:
+                mostra_warning_win95(
+                    self, 
+                    "Sconfitta", 
+                    f"{self.opp_name} ha raggiunto {self.opp_score} punti e ha vinto la partita.\nPuoi richiedere una rivincita cliccando 'Nuova Partita'."
+                )
         else:
-            # Riparte il conto alla rovescia per il turno successivo
+            self.lbl_status.config(text=dettagli)
+            self.btn_invia.config(state="normal")
             self._avvia_timer()
 
     def _on_disconnect(self, err):
         self._ferma_timer()
-        messagebox.showwarning("Disconnessione", f"Connessione al server o all'altro giocatore interrotta:\n{err}")
+        mostra_warning_win95(
+            self,
+            "Connessione Interrotta",
+            f"La connessione con il server o con l'avversario è caduta:\n{err}"
+        )
         self._abbandona()
 
     def _abbandona(self):
@@ -987,7 +1252,6 @@ class SchermataGiocoMultiplayer(tk.Frame):
         if hasattr(self, "net") and self.net:
             self.net.close()
         self.master.mostra_menu()
-
 # =============================================================================
 # SCHERMATA DI GIOCO SINGLE PLAYER (VS AI)
 # =============================================================================
@@ -1060,7 +1324,7 @@ class SchermataGioco(tk.Frame):
             if not (1 <= x_p <= 5) or not (2 <= y_p <= 10):
                 raise ValueError
         except ValueError:
-            messagebox.showerror("Errore", "Inserisci dita tra 1 e 5 e una somma prevista tra 2 e 10.")
+            mostra_warning_win95(self, "Errore Mossa", "Inserisci dita tra 1 e 5 e una somma prevista tra 2 e 10.")
             return
 
         x_ai, y_ai = scegli_mossa_ai(self.difficolta, self.storico_x, self.storico_y)
